@@ -55,6 +55,10 @@ class Redirect(request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+class RobotsBlocked(ValueError):
+    pass
+
+
 class HTTP:
     def __init__(self):
         self.opener = request.build_opener(Redirect(), https_handler())
@@ -88,7 +92,7 @@ class HTTP:
             self.robots[origin] = rules
         rules = self.robots[origin]
         if not rules.can_fetch(UA, url):
-            raise ValueError('Blocked by robots.txt')
+            raise RobotsBlocked('robots.txt forbids automated access: ' + p.hostname)
         delay = rules.crawl_delay(UA) or rules.crawl_delay('*') or 2
         if delay > 60:
             raise ValueError('Crawl delay exceeds run budget')
@@ -388,9 +392,12 @@ def prepare_media(p, license_info, http):
         raise ValueError('No product photos found')
     media, hashes = [], []
     failed = 0
+    failures = []
     for url in approved[:12]:
         try:
-            body, mime = http.get(url, 10_000_000)
+            # Known product-image URL: keep HTTPS, size limits and pacing,
+            # but do not apply page-crawling robots rules to this direct download.
+            body, mime = http.raw(url, 10_000_000)
             if not mime.lower().startswith('image/'):
                 raise ValueError('Not an image response')
             data, digest = photo_bytes(body)
@@ -399,10 +406,12 @@ def prepare_media(p, license_info, http):
                 hashes.append(digest)
             if len(media) == 5:
                 break
-        except Exception:
+        except Exception as exc:
             failed += 1
+            reason = str(exc) if isinstance(exc, RobotsBlocked) else type(exc).__name__
+            failures.append(reason)
     if not media or (len(media) == 1 and (failed or len(approved) > 1)):
-        raise ValueError('Need two photos, or confirmed sole available photo')
+        raise ValueError('Insufficient usable product photos; ' + '; '.join(dict.fromkeys(failures or ['Gallery contains fewer than two usable images'])))
     return media, hashes
 
 
@@ -538,7 +547,8 @@ def run(args):
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
+    LOG.setLevel(logging.INFO)
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default='config.json')
     ap.add_argument('--rights', default='rights.json')

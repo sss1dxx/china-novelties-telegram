@@ -81,7 +81,7 @@ class ParserTests(unittest.TestCase):
 
     def test_single_photo_not_allowed_after_second_download_failure(self):
         class FakeHTTP:
-            def get(self, url, limit):
+            def raw(self, url, limit):
                 if url == 'bad': raise OSError()
                 return b'image', 'image/jpeg'
         with patch.object(p, 'photo_bytes', return_value=(b'jpeg', 'hash')):
@@ -90,7 +90,7 @@ class ParserTests(unittest.TestCase):
 
     def test_automatic_gallery_without_permission_records(self):
         class FakeHTTP:
-            def get(self, url, limit): return url.encode(), 'image/jpeg'
+            def raw(self, url, limit): return url.encode(), 'image/jpeg'
         with patch.object(p, 'photo_bytes', side_effect=lambda b:(b,b.decode())):
             media, hashes = p.prepare_media(product(images=['front','side']), {}, FakeHTTP())
             self.assertEqual(media, [b'front', b'side'])
