@@ -91,7 +91,7 @@ def telegram_check(token, channel):
 
 
 def project_files(values=None):
-    allowed = ['parser.py','setup_app.py','network.py','config.json','rights.json','requirements.txt','.gitignore','.china-parser','README.md']
+    allowed = ['parser.py','editorial.py','setup_app.py','network.py','config.json','rights.json','requirements.txt','.gitignore','.china-parser','README.md']
     paths = [ROOT/p for p in allowed]
     paths += list((ROOT/'scripts').glob('*.py')) + list((ROOT/'scripts').glob('*.sh'))
     paths += list((ROOT/'tests').glob('*.py')) + list((ROOT/'.github/workflows').glob('*.yml'))
@@ -111,7 +111,10 @@ def upload(gh, repo, branch, values=None):
     files = project_files(values)
     if values and values.get('update_only'):
         # Existing source choices and editorial overrides belong to the deployed project.
-        files.pop('config.json', None)
+        existing = gh.call(f'/repos/{repo}/contents/config.json?ref={parse.quote(branch,safe="")}')
+        cfg = json.loads(base64.b64decode(existing['content']))
+        cfg.update(daily_limit=24, per_run=1, backfill_target=24, backfill_per_run=24)
+        files['config.json'] = json.dumps(cfg, ensure_ascii=False, indent=2)
         files.pop('rights.json', None)
     entries = [{'path':name,'mode':'100644','type':'blob','content':body} for name,body in files.items()]
     tree = gh.call(f'/repos/{repo}/git/trees','POST',{'base_tree':commit['tree']['sha'],'tree':entries})
@@ -154,17 +157,17 @@ def deploy(values):
             gh.secret(repo,'TELEGRAM_BOT_TOKEN',values['bot_token'])
             gh.secret(repo,'TELEGRAM_CHAT_ID',channel)
             values['bot_token'] = ''
-        step('Запускаю сбор, перевод и первый реальный пост на GitHub…')
+        step('Запускаю сбор и наполнение канала проверенными товарами на GitHub…')
         setup_id = uuid.uuid4().hex
         # Workflow registration can lag behind the first commit.
         for attempt in range(8):
             try:
-                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/dispatches','POST',{'ref':branch,'inputs':{'mode':'activate','setup_id':setup_id}})
+                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/dispatches','POST',{'ref':branch,'inputs':{'mode':('send' if values.get('update_only') else 'activate'),'setup_id':setup_id}})
                 break
             except APIError as exc:
                 if exc.code != 404 or attempt == 7: raise
                 time.sleep(5)
-        deadline = time.monotonic() + 900
+        deadline = time.monotonic() + 2100
         while time.monotonic() < deadline:
             runs = gh.call(f'/repos/{repo}/actions/workflows/parser.yml/runs?event=workflow_dispatch&per_page=30')['workflow_runs']
             matched = next((r for r in runs if setup_id in r.get('display_title','')), None)
@@ -176,7 +179,7 @@ def deploy(values):
                     with LOCK: STATE['url'] = matched['html_url']
                     raise SetupError('Проверка не пройдена; расписание выключено. Откройте указанный шаг в GitHub Actions — причины пропуска товаров теперь выведены в журнал.')
                 gh.variable(repo,'PUBLISH_ENABLED','true')
-                step('Первый пост отправлен. Расписание каждые 4 часа включено; Mac можно выключить.')
+                step('Запуск завершён. Проверка каждый час включена; первичное наполнение — до 24 проверенных новых товаров. Прогресс в отчёте GitHub Actions. Mac можно выключить.')
                 with LOCK: STATE['done'] = True
                 return
             time.sleep(10)

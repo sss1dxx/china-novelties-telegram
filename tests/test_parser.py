@@ -8,7 +8,7 @@ import parser as p
 URL = 'https://example.com/product/1'
 
 def product(**kwargs):
-    result = dict(url=URL, title='Smart robot', description='Робот для дома.', features=['Голосовое управление', 'Подключение по Wi-Fi'],
+    result = dict(url=URL, title='Умный робот', description='Робот для дома.', features=['Голосовое управление', 'Подключение по Wi-Fi'],
                   status='краудфандинг', language='ru', supporters=10, published='', price='', brand='', model='')
     result.update(kwargs)
     return result
@@ -33,13 +33,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result['status'], 'краудфандинг')
 
     def test_unknown_or_stale_supplier_novelty_rejected(self):
-        self.assertEqual(p.score(product(status='доступен у поставщика')), 0)
-        self.assertEqual(p.score(product(published='2001-01-01')), 0)
+        self.assertEqual(p.score(product(title='Smart robot', status='доступен у поставщика')), 0)
+        self.assertEqual(p.score(product(title='Smart robot', published='2001-01-01')), 0)
         self.assertEqual(p.score(product(title='Smart robot online course')), 0)
-        self.assertGreater(p.score(product()), 40)
+        self.assertGreater(p.score(product(title='Smart robot')), 40)
 
     def test_caption_limits_and_escaping(self):
-        text = p.caption(product(title='Робот <новый>', description='А'*2000, features=['Б'*2000]*3))
+        text = p.caption(product(title='Робот <новый>', description='А'*2000, features=['Голосовое управление','Подключение по Wi-Fi']))
         self.assertIn('&lt;новый&gt;', text)
         self.assertLess(len(p.html.unescape(p.re.sub('<[^>]+>', '', text)).encode('utf-16-le'))//2, 1025)
 

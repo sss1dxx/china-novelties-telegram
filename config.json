@@ -1,6 +1,6 @@
 {
   "timezone": "Europe/Moscow",
-  "daily_limit": 6,
+  "daily_limit": 24,
   "per_run": 1,
   "max_age_days": 45,
   "min_score": 40,
@@ -32,5 +32,7 @@
       "language": "en",
       "note": "JSON-LD адаптер; нужны профильные страницы каталога и проверка даты новизны."
     }
-  ]
+  ],
+  "backfill_target": 24,
+  "backfill_per_run": 24
 }

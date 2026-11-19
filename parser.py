@@ -21,6 +21,7 @@ import unicodedata
 from urllib import request, parse, error, robotparser
 from zoneinfo import ZoneInfo
 from network import https_handler, tls_context
+from editorial import editorial_copy, CONTACT
 
 LOG = logging.getLogger('collector')
 UA = 'ChinaNoveltiesBot/1.0'
@@ -293,6 +294,7 @@ class Store:
         CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY, url TEXT UNIQUE, fingerprint TEXT, day TEXT, status TEXT, response TEXT, created TEXT);
         CREATE TABLE IF NOT EXISTS media(hash TEXT PRIMARY KEY, delivery INTEGER);
         CREATE TABLE IF NOT EXISTS errors(at TEXT, source TEXT, kind TEXT);
+        CREATE TABLE IF NOT EXISTS backfill(delivery INTEGER PRIMARY KEY);
         ''')
         self.db.commit()
 
@@ -306,14 +308,22 @@ class Store:
             return True
         return any(self.db.execute('SELECT 1 FROM media WHERE hash=?', (h,)).fetchone() for h in hashes)
 
-    def reserve(self, p, hashes, day, limit):
+    def backfill_count(self):
+        return self.db.execute("SELECT COUNT(*) FROM backfill JOIN deliveries ON delivery=id WHERE status='sent'").fetchone()[0]
+
+    def reserve(self, p, hashes, day, limit, backfill_target=0):
         with self.db:
             if self.duplicate(p, hashes):
                 return None
-            if self.db.execute('SELECT COUNT(*) FROM deliveries WHERE day=?', (day,)).fetchone()[0] >= limit:
+            filling = backfill_target > 0
+            if filling and self.db.execute("SELECT COUNT(*) FROM backfill JOIN deliveries ON delivery=id WHERE status IN ('sent','pending','uncertain')").fetchone()[0] >= backfill_target:
+                return None
+            if not filling and self.db.execute('SELECT COUNT(*) FROM deliveries WHERE day=? AND id NOT IN (SELECT delivery FROM backfill)', (day,)).fetchone()[0] >= limit:
                 return None
             cur = self.db.execute('INSERT INTO deliveries(url,fingerprint,day,status,created) VALUES(?,?,?,?,?)',
                                   (p['url'], fingerprint(p), day, 'pending', utcnow()))
+            if filling:
+                self.db.execute('INSERT INTO backfill VALUES(?)', (cur.lastrowid,))
             for h in hashes:
                 self.db.execute('INSERT OR IGNORE INTO media VALUES(?,?)', (h, cur.lastrowid))
             return cur.lastrowid
@@ -351,19 +361,14 @@ def clip(text, units):
 
 
 def caption(p):
-    esc = html.escape
-    title = clip(translate(p['title'], p['language']), 105)
-    desc = clip(translate(p['description'], p['language']), 240)
-    features = [clip(translate(x, p['language']), 90) for x in p.get('features', [])[:3]]
-    if len(features) < 2 or not desc:
-        raise ValueError('Not enough verified description/features')
-    text = f'🚀 <b>{esc(title)}</b>\n\n{esc(desc)}\n\n🔥 <b>Особенности:</b>\n' + '\n'.join('• ' + esc(x) for x in features)
-    text += f'\n\n📦 <b>Статус:</b> {esc(p["status"])}'
+    title, body = editorial_copy(p, translate)
+    text = f'🚀 <b>{html.escape(title)}</b>\n\n{html.escape(body)}'
+    text += f'\n\nСтатус: {html.escape(p["status"])}'
     if p.get('price'):
-        text += '\n💰 <b>Цена:</b> ' + esc(clip(p['price'], 65))
-    text += f'\n🔗 <a href="{esc(p["url"], quote=True)}">Источник</a>'
-    plain = re.sub('<[^>]+>', '', html.unescape(text))
-    if len(plain.encode('utf-16-le')) // 2 > 1024:
+        text += '\nЦена: ' + html.escape(clip(p['price'], 65))
+    text += '\n\n' + CONTACT
+    plain = re.sub('<[^>]+>', '', text)
+    if len(html.unescape(plain).encode('utf-16-le')) // 2 > 1024:
         raise ValueError('Caption exceeds Telegram limit')
     return text
 
@@ -488,7 +493,13 @@ def run(args):
     if args.send and (not token or not chat):
         raise RuntimeError('Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID')
     day = dt.datetime.now(ZoneInfo(cfg['timezone'])).date().isoformat()
+    target = int(cfg.get('backfill_target', 0))
+    filling = store.db.execute('SELECT COUNT(*) FROM backfill').fetchone()[0] < target
+    run_limit = cfg.get('backfill_per_run', 24) if filling else cfg['per_run']
+    deadline = time.monotonic() + 900
     for (payload,) in rows:
+        if time.monotonic() > deadline or (args.send and report['attempted'] >= run_limit):
+            break
         p = json.loads(payload)
         if store.duplicate(p):
             continue
@@ -513,9 +524,9 @@ def run(args):
                 continue
             report['candidates'].append({'url': p['url'], 'caption': text, 'photos': len(media)})
             if args.send:
-                if report['attempted'] >= cfg['per_run']:
+                if report['attempted'] >= run_limit:
                     break
-                ident = store.reserve(p, hashes, day, cfg['daily_limit'])
+                ident = store.reserve(p, hashes, day, cfg['daily_limit'], target if filling else 0)
                 if ident is None:
                     continue
                 checkpoint(store)
@@ -528,6 +539,8 @@ def run(args):
                     store.finish(ident, 'uncertain', {'error': type(exc).__name__})
                     store.failure('telegram', exc)
                 checkpoint(store)
+                if report['attempted'] < run_limit:
+                    time.sleep(4)
             else:
                 folder = Path(args.output) / hashlib.sha256(p['url'].encode()).hexdigest()[:12]
                 folder.mkdir(parents=True, exist_ok=True)
@@ -542,6 +555,8 @@ def run(args):
             store.failure(p['source'], exc)
     checkpoint(store)
     Path(args.output).mkdir(parents=True, exist_ok=True)
+    report['backfill'] = {'target': target, 'sent': store.backfill_count(),
+                          'remaining': max(0, target - store.backfill_count())}
     Path(args.output, 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     LOG.info('Eligible previews: %s; sent: %s', len(report['candidates']), report['sent'])
 
