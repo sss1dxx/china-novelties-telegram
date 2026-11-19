@@ -231,6 +231,21 @@ def product_from_html(content, url, source):
                 for n in DOM(template.text()).root.walk():
                     if n.tag == 'img' and '/dst_project/' in n.attrs.get('src', ''):
                         images.append(n.attrs['src'])
+    if source['name'] == 'modian':
+        project_facts = []
+        for n in nodes:
+            if n.attrs.get('id') == 'projectContentTemplate':
+                project_nodes = list(DOM(n.text()).root.walk())
+            elif n.attrs.get('id') == 'projectDetail':
+                project_nodes = list(n.walk())
+            else:
+                continue
+            for part in project_nodes:
+                if part.tag in ('p', 'li', 'h2', 'h3', 'h4'):
+                    fragment = clean(part.text())
+                    if 3 <= len(fragment) <= 400 and fragment != '项目详情':
+                        project_facts.append(fragment)
+        features = list(dict.fromkeys(features + project_facts))[:60]
     text = '\n'.join(n.text() for n in nodes if n.tag in ('p', 'li', 'h3'))
     deadline = re.search(r'此项目须在\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2})', text)
     status = ''
@@ -243,7 +258,7 @@ def product_from_html(content, url, source):
     supporters = re.search(r'(\d+)\s*人\s*支持人数', text)
     videos = [parse.urljoin(url, n.attrs.get('src', '')) for n in nodes if n.tag in ('video', 'source') and '.mp4' in n.attrs.get('src', '')]
     return dict(url=canonical(url), source=source['name'], language=source.get('language', 'en'),
-                title=clean(title), description=description, features=features[:3],
+                title=clean(title), description=description, features=features[:60],
                 images=list(dict.fromkeys(parse.urljoin(url, x) for x in images if isinstance(x, str) and x)),
                 videos=videos, price=price, status=status, published=data.get('releaseDate') or meta.get('article:published_time', '') or modian_date,
                 supporters=int(supporters[1]) if supporters else modian_supporters,
@@ -254,6 +269,24 @@ def product_from_html(content, url, source):
 def discover(content, base, pattern):
     return list(dict.fromkeys(canonical(parse.urljoin(base, n.attrs['href'])) for n in DOM(content).root.walk()
                              if n.tag == 'a' and n.attrs.get('href') and re.fullmatch(pattern, canonical(parse.urljoin(base, n.attrs['href'])))))
+
+
+def collect_urls(http, source):
+    urls, errors = [], []
+    listing = source['listing'].rstrip('/')
+    for page in range(1, min(8, max(1, int(source.get('max_pages', 1)))) + 1):
+        page_url = listing if page == 1 else listing + '/' + str(page)
+        try:
+            body, _ = http.get(page_url)
+            found = discover(body.decode('utf-8', 'replace'), page_url, source['product_pattern'])
+        except Exception as exc:
+            errors.append({'page': page, 'reason': type(exc).__name__})
+            break
+        new = [u for u in found if u not in urls]
+        if not new:
+            break
+        urls.extend(new)
+    return urls, errors
 
 
 def score(p, max_age=45):
@@ -473,9 +506,8 @@ def run(args):
             report['sources'].append({'name': source['name'], 'status': 'terms_review_required'})
             continue
         try:
-            body, _ = http.get(source['listing'])
-            urls = discover(body.decode('utf-8', 'replace'), source['listing'], source['product_pattern'])
-            report['sources'].append({'name': source['name'], 'found': len(urls), 'status': 'ok' if urls else 'empty_or_changed_markup'})
+            urls, page_errors = collect_urls(http, source)
+            report['sources'].append({'name': source['name'], 'found': len(urls), 'page_errors': page_errors, 'status': 'ok' if urls else 'empty_or_changed_markup'})
             for url in urls[:source.get('max_products', 20)]:
                 try:
                     body, _ = http.get(url)
@@ -502,6 +534,7 @@ def run(args):
             break
         p = json.loads(payload)
         if store.duplicate(p):
+            report['skipped'].append({'url': p['url'], 'reason': 'Already published or uncertain delivery'})
             continue
         # Refresh shortlisted products before publishing: no stale statuses/prices.
         try:
@@ -557,8 +590,20 @@ def run(args):
     Path(args.output).mkdir(parents=True, exist_ok=True)
     report['backfill'] = {'target': target, 'sent': store.backfill_count(),
                           'remaining': max(0, target - store.backfill_count())}
+    report['outcome'] = ('published' if report['sent'] else
+                         'delivery_uncertain' if report['attempted'] else
+                         'no_eligible_products')
+    if os.getenv('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+            f.write('## Publication result\n')
+            f.write('Sent: %s. Initial fill: %s/%s. Outcome: %s.\n' %
+                    (report['sent'], store.backfill_count(), target, report['outcome']))
+            for item in report['skipped']:
+                f.write('- %s: %s\n' % (item['url'], item['reason']))
     Path(args.output, 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     LOG.info('Eligible previews: %s; sent: %s', len(report['candidates']), report['sent'])
+    if args.send and report['attempted'] > report['sent']:
+        raise RuntimeError('Uncertain Telegram delivery; inspect report before retrying')
 
 
 if __name__ == '__main__':

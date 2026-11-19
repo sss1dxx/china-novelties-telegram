@@ -11,8 +11,9 @@
       "terms_reviewed": true,
       "listing": "https://zhongchou.modian.com/technology/top_time/publishing",
       "product_pattern": "^https://zhongchou\\.modian\\.com/item/[0-9]+\\.html$",
-      "max_products": 20,
-      "language": "zh"
+      "max_products": 60,
+      "language": "zh",
+      "max_pages": 5
     },
     {
       "name": "xiaomi",

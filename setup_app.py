@@ -114,6 +114,9 @@ def upload(gh, repo, branch, values=None):
         existing = gh.call(f'/repos/{repo}/contents/config.json?ref={parse.quote(branch,safe="")}')
         cfg = json.loads(base64.b64decode(existing['content']))
         cfg.update(daily_limit=24, per_run=1, backfill_target=24, backfill_per_run=24)
+        for source in cfg['sources']:
+            if source['name'] == 'modian':
+                source.update(max_pages=5, max_products=60)
         files['config.json'] = json.dumps(cfg, ensure_ascii=False, indent=2)
         files.pop('rights.json', None)
     entries = [{'path':name,'mode':'100644','type':'blob','content':body} for name,body in files.items()]
@@ -148,7 +151,6 @@ def deploy(values):
             names = {item['name'] for item in gh.call(f'/repos/{repo}/actions/secrets?per_page=100').get('secrets', [])}
             if not {'TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID'}.issubset(names):
                 raise SetupError('В репозитории нет сохранённых реквизитов Telegram. Используйте обычную настройку.')
-        gh.variable(repo, 'PUBLISH_ENABLED', 'false')
         upload(gh, repo, branch, values)
         if values.get('update_only'):
             step('Использую ранее сохранённые реквизиты Telegram. Канал и история сохранены.')
@@ -162,7 +164,8 @@ def deploy(values):
         # Workflow registration can lag behind the first commit.
         for attempt in range(8):
             try:
-                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/dispatches','POST',{'ref':branch,'inputs':{'mode':('send' if values.get('update_only') else 'activate'),'setup_id':setup_id}})
+                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/enable', 'PUT')
+                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/dispatches','POST',{'ref':branch,'inputs':{'mode':'send','setup_id':setup_id}})
                 break
             except APIError as exc:
                 if exc.code != 404 or attempt == 7: raise
@@ -177,13 +180,13 @@ def deploy(values):
                     failed_steps = [s['name'] for j in jobs for s in j.get('steps', []) if s.get('conclusion') in ('failure','timed_out')]
                     step('Ошибка на шаге: ' + ', '.join(failed_steps or [matched.get('conclusion','unknown')]))
                     with LOCK: STATE['url'] = matched['html_url']
-                    raise SetupError('Проверка не пройдена; расписание выключено. Откройте указанный шаг в GitHub Actions — причины пропуска товаров теперь выведены в журнал.')
-                gh.variable(repo,'PUBLISH_ENABLED','true')
+                    raise SetupError('Запуск завершился ошибкой; проверьте журнал. Откройте указанный шаг в GitHub Actions — причины пропуска товаров теперь выведены в журнал.')
+                gh.call(f'/repos/{repo}/actions/workflows/parser.yml/enable', 'PUT')
                 step('Запуск завершён. Проверка каждый час включена; первичное наполнение — до 24 проверенных новых товаров. Прогресс в отчёте GitHub Actions. Mac можно выключить.')
                 with LOCK: STATE['done'] = True
                 return
             time.sleep(10)
-        raise SetupError('Ожидание проверки истекло. Расписание не включено. Посмотрите результат в GitHub Actions.')
+        raise SetupError('Ожидание проверки истекло. GitHub продолжает работу независимо от этого окна. Посмотрите результат в GitHub Actions.')
     except SetupError as exc:
         step(str(exc))
     except Exception as exc:
