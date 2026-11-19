@@ -1,0 +1,36 @@
+{
+  "timezone": "Europe/Moscow",
+  "daily_limit": 6,
+  "per_run": 1,
+  "max_age_days": 45,
+  "min_score": 40,
+  "sources": [
+    {
+      "name": "modian",
+      "enabled": true,
+      "terms_reviewed": true,
+      "listing": "https://zhongchou.modian.com/technology/top_time/publishing",
+      "product_pattern": "^https://zhongchou\\.modian\\.com/item/[0-9]+\\.html$",
+      "max_products": 20,
+      "language": "zh"
+    },
+    {
+      "name": "xiaomi",
+      "enabled": false,
+      "terms_reviewed": false,
+      "listing": "https://m.mi.com/crowdfunding/home",
+      "product_pattern": "(?!)",
+      "language": "zh",
+      "note": "Нужен проверенный адаптер динамического каталога; заглушка отключена."
+    },
+    {
+      "name": "made-in-china",
+      "enabled": false,
+      "terms_reviewed": false,
+      "listing": "https://www.made-in-china.com/",
+      "product_pattern": "^https://[a-z0-9-]+\\.en\\.made-in-china\\.com/product/[^/]+/[^/]+\\.html$",
+      "language": "en",
+      "note": "JSON-LD адаптер; нужны профильные страницы каталога и проверка даты новизны."
+    }
+  ]
+}
