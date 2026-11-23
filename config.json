@@ -2,12 +2,22 @@
   "timezone": "Europe/Moscow",
   "daily_limit": 24,
   "per_run": 1,
-  "max_age_days": 45,
+  "max_age_days": 14,
   "min_score": 40,
   "sources": [
     {
-      "name": "modian",
+      "name": "kickstarter",
       "enabled": true,
+      "terms_reviewed": true,
+      "listing": "https://www.kickstarter.com/discover/advanced?category_id=16&sort=newest&state=live",
+      "product_pattern": "^https://www\\.kickstarter\\.com/projects/[^/]+/[^/]+$",
+      "language": "en",
+      "max_pages": 5,
+      "max_products": 60
+    },
+    {
+      "name": "modian",
+      "enabled": false,
       "terms_reviewed": true,
       "listing": "https://zhongchou.modian.com/technology/top_time/publishing",
       "product_pattern": "^https://zhongchou\\.modian\\.com/item/[0-9]+\\.html$",

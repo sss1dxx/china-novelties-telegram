@@ -161,6 +161,8 @@ def json_objects(value):
 
 
 def product_from_html(content, url, source):
+    if source['name'] == 'kickstarter':
+        return kickstarter_product(content, url)
     nodes = list(DOM(content).root.walk())
     meta = {n.attrs.get('property', n.attrs.get('name')): n.attrs.get('content', '') for n in nodes if n.tag == 'meta'}
     objects = []
@@ -266,6 +268,75 @@ def product_from_html(content, url, source):
                 model=clean(data.get('model') or data.get('mpn') or ''), discovered=utcnow())
 
 
+def kickstarter_product(content, url):
+    """Read first-party campaign payload; do not infer launch from discovery date."""
+    match = re.search(r'window\.current_project\s*=\s*("(?:[^"\\]|\\.)*")', content)
+    if not match:
+        raise ValueError('Kickstarter campaign payload missing or challenge page')
+    data = json.loads(html.unescape(json.loads(match[1])))
+    expected = canonical(data.get('urls', {}).get('web', {}).get('project', ''))
+    if expected != canonical(url):
+        raise ValueError('Campaign identity mismatch')
+    category = data.get('category', {}).get('slug', '')
+    physical = category in {'technology/3d-printing', 'technology/camera-equipment',
+        'technology/diy-electronics', 'technology/fabrication-tools', 'technology/gadgets',
+        'technology/hardware', 'technology/robots',
+        'technology/sound', 'technology/space-exploration', 'technology/wearables',
+        'design/product-design'}
+    launched = data.get('launched_at')
+    deadline = data.get('deadline', 0)
+    active = data.get('state') == 'live' and deadline > time.time()
+    images = []
+    photo = data.get('photo') or {}
+    cover = photo.get('1536x864') or photo.get('1024x576') or photo.get('full')
+    if cover:
+        images.append(cover)
+    # Only images inside this campaign's story; exclude creator avatars and recommendations.
+    for node in DOM(content).root.walk():
+        if node.tag != 'img':
+            continue
+        ancestor = node.parent
+        while ancestor:
+            if 'description-container' in ancestor.attrs.get('class', '').split():
+                image = node.attrs.get('data-src') or node.attrs.get('src', '')
+                if parse.urlsplit(image).hostname == 'i.kickstarter.com':
+                    images.append(image)
+                break
+            ancestor = ancestor.parent
+    blurb = clean(data.get('blurb', ''))
+    return dict(url=canonical(url), source='kickstarter', language='en',
+        title=clean(data['name']), description=blurb, features=[blurb],
+        images=list(dict.fromkeys(images)), videos=[], price='',
+        status='краудфандинг' if active and physical else '',
+        published=dt.datetime.fromtimestamp(launched, dt.timezone.utc).isoformat() if launched else '',
+        supporters=max(0, int(data.get('backers_count', 0))), brand='', model='',
+        category=category, physical=physical, discovered=utcnow())
+
+
+def enrich_kickstarter_media(product):
+    """Render the public story, without credentials or anti-bot workarounds."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            response = page.goto(product['url'], wait_until='domcontentloaded', timeout=45000)
+            if not response or response.status >= 400:
+                raise ValueError('Kickstarter browser request failed')
+            # Wait for actual campaign content, not the empty React mount.
+            page.wait_for_function("""() => {
+                const story = document.querySelector('#react-campaign');
+                return story && (story.querySelector('img') || story.innerText.length > 200);
+            }""", timeout=30000)
+            for image in page.locator('#react-campaign img').all()[:12]:
+                image.scroll_into_view_if_needed(timeout=5000)
+            rendered = kickstarter_product(page.content(), product['url'])
+            product['images'] = list(dict.fromkeys(product['images'] + rendered['images']))
+        finally:
+            browser.close()
+    return product
+
+
 def discover(content, base, pattern):
     return list(dict.fromkeys(canonical(parse.urljoin(base, n.attrs['href'])) for n in DOM(content).root.walk()
                              if n.tag == 'a' and n.attrs.get('href') and re.fullmatch(pattern, canonical(parse.urljoin(base, n.attrs['href'])))))
@@ -275,10 +346,21 @@ def collect_urls(http, source):
     urls, errors = [], []
     listing = source['listing'].rstrip('/')
     for page in range(1, min(8, max(1, int(source.get('max_pages', 1)))) + 1):
-        page_url = listing if page == 1 else listing + '/' + str(page)
+        if source['name'] == 'kickstarter':
+            parts = parse.urlsplit(listing)
+            query = dict(parse.parse_qsl(parts.query))
+            query.update(page=str(page), format='json')
+            page_url = parse.urlunsplit(parts._replace(query=parse.urlencode(query)))
+        else:
+            page_url = listing if page == 1 else listing + '/' + str(page)
         try:
             body, _ = http.get(page_url)
-            found = discover(body.decode('utf-8', 'replace'), page_url, source['product_pattern'])
+            if source['name'] == 'kickstarter':
+                projects = json.loads(body)['projects']
+                found = [canonical(p['urls']['web']['project']) for p in projects
+                         if re.fullmatch(source['product_pattern'], canonical(p['urls']['web']['project']))]
+            else:
+                found = discover(body.decode('utf-8', 'replace'), page_url, source['product_pattern'])
         except Exception as exc:
             errors.append({'page': page, 'reason': type(exc).__name__})
             break
@@ -290,7 +372,11 @@ def collect_urls(http, source):
 
 
 def score(p, max_age=45):
-    if not RELEVANT.search(p['title']) or EXCLUDE.search(p['title']):
+    if p.get('source') == 'kickstarter':
+        if not p.get('physical') or not p.get('published'):
+            return 0
+        max_age = min(max_age, 14)
+    if (p.get('source') != 'kickstarter' and not RELEVANT.search(p['title'])) or EXCLUDE.search(p['title']):
         return 0
     if not p.get('status'):
         return 0
@@ -302,6 +388,8 @@ def score(p, max_age=45):
             if age < -1 or age > max_age:
                 return 0
             points += 20
+            if p.get("source") == "kickstarter":
+                points += 100 + max(0, 14 - age) * 20
         except ValueError:
             return 0
     elif p['status'] == 'доступен у поставщика':
@@ -507,7 +595,7 @@ def run(args):
             continue
         try:
             urls, page_errors = collect_urls(http, source)
-            report['sources'].append({'name': source['name'], 'found': len(urls), 'page_errors': page_errors, 'status': 'ok' if urls else 'empty_or_changed_markup'})
+            report['sources'].append({'name': source['name'], 'found': len(urls), 'page_errors': page_errors, 'status': 'partial' if page_errors and urls else ('error' if page_errors else ('ok' if urls else 'empty_or_changed_markup'))})
             for url in urls[:source.get('max_products', 20)]:
                 try:
                     body, _ = http.get(url)
@@ -552,6 +640,8 @@ def run(args):
                     if key in facts:
                         p[key] = facts[key]
             text = caption(p)
+            if p['source'] == 'kickstarter':
+                p = enrich_kickstarter_media(p)
             media, hashes = prepare_media(p, permission, http)
             if store.duplicate(p, hashes):
                 continue

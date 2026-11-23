@@ -113,7 +113,9 @@ def upload(gh, repo, branch, values=None):
         # Existing source choices and editorial overrides belong to the deployed project.
         existing = gh.call(f'/repos/{repo}/contents/config.json?ref={parse.quote(branch,safe="")}')
         cfg = json.loads(base64.b64decode(existing['content']))
-        cfg.update(daily_limit=24, per_run=1, backfill_target=24, backfill_per_run=24)
+        cfg.update(daily_limit=24, per_run=1, backfill_target=24, backfill_per_run=24, max_age_days=14)
+        kickstarter = json.loads(files["config.json"])["sources"][0]
+        cfg["sources"] = [kickstarter] + [dict(s, enabled=False) for s in cfg["sources"] if s["name"] != "kickstarter"]
         for source in cfg['sources']:
             if source['name'] == 'modian':
                 source.update(max_pages=5, max_products=60)
@@ -198,8 +200,8 @@ def deploy(values):
 
 PAGE = '''<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Китайские новинки · Запуск</title>
 <style>body{font:16px/1.5 system-ui;margin:0;background:#f3f5f6;color:#17272b}main{max-width:720px;margin:48px auto;padding:32px;background:white;border-radius:24px}small,.muted{color:#617276}h1{font-size:32px;line-height:1.15}label{display:block;margin:18px 0 5px}input:not([type=checkbox]){box-sizing:border-box;width:100%;padding:13px;border:1px solid #c8d3d5;border-radius:9px;font:inherit}button{background:#0b6854;color:white;border:0;border-radius:12px;padding:15px 24px;font:600 17px system-ui;margin-top:24px;cursor:pointer}button:disabled{opacity:.5}.notice{padding:15px;background:#fff5d9;border-radius:12px}a{color:#087660}li{margin-bottom:9px}#result{white-space:pre-wrap}#link{display:block;margin-top:15px}</style>
-<main><small>CHINA NOVELTIES / НАСТРОЙКА</small><h1>Подключить канал.<br>Запустить одной кнопкой.</h1><p class="muted">Один раз введите доступы. Установщик создаст проект, настроит секреты, запустит проверку и включит расписание только после первого успешного поста.</p>
-<div class="notice"><b>Текущая сборка ещё требует проверки источников.</b> Xiaomi отключён. Если нет доступных фото или каталога, установка покажет причину и не объявит парсер работающим.</div>
+<main><small>CHINA NOVELTIES / НАСТРОЙКА</small><h1>Подключить канал.<br>Запустить одной кнопкой.</h1><p class="muted">Один раз введите доступы. Установщик создаст проект, настроит секреты, запустит проверку и включит почасовой сбор новых товаров Kickstarter.</p>
+<div class="notice"><b>Основной источник — новые кампании Kickstarter.</b> Xiaomi отключён. Если нет доступных фото или каталога, установка покажет причину и не объявит парсер работающим.</div>
 <form id="form"><label><input type="checkbox" name="update_only" id="update_only"> Обновить установленный проект — использовать сохранённые Telegram Secrets</label><label>Токен GitHub</label><input name="github_token" type="password" autocomplete="off" required><small><a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=China%20Novelties%20Setup" target="_blank" rel="noreferrer">Создать токен для установки</a> · права repo и workflow. Можно отозвать после успешной настройки.</small>
 <label>Токен существующего Telegram-бота</label><input name="bot_token" type="password" autocomplete="off" required><small>Из @BotFather. Бот должен быть администратором канала.</small>
 <label>Telegram-канал</label><input name="channel" placeholder="@your_channel или -100…" required>

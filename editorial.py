@@ -86,6 +86,8 @@ def product_name(product):
 
 
 def editorial_copy(product, translator):
+    if product.get('source') == 'kickstarter':
+        return kickstarter_copy(product)
     source_title = product['title']
     # Ignore reward/shipping copy: it often describes an accessory rather than the product.
     evidence = [source_title] + list(product.get('features', []))
@@ -145,3 +147,75 @@ def editorial_copy(product, translator):
         raise ValueError('Not enough reliable facts for a Russian post')
     # A single prose paragraph; no repeated raw description or feature header.
     return title, ' '.join(facts)
+
+# English campaign summaries are separate from reward tiers and shipping copy.
+EN_CATEGORIES = [
+    (r'laser measure|laser distance', 'лазерный измеритель'),
+    (r'smart.*glasses|AI.*eyewear', 'умные очки'),
+    (r'3d scanner', '3D-сканер'), (r'3d print', '3D-принтер'),
+    (r'robotic mower|robot.*mower', 'робот-газонокосилка'),
+    (r'robot', 'робот'), (r'projector', 'проектор'),
+    (r'keyboard', 'клавиатура'), (r'power bank', 'внешний аккумулятор'),
+    (r'power station', 'портативная электростанция'),
+    (r'workstation|\bNAS\b', 'компьютер и система хранения данных'),
+    (r'displays?|monitors?|screens?', 'система экранов'),
+    (r'chair|backrest', 'кресло'), (r'earbuds|headphones', 'наушники'),
+    (r'smart ring', 'умное кольцо'), (r'camera|dash cam', 'камера'),
+    (r'screwdriver', 'электрическая отвёртка'), (r'\bCNC\b', 'станок с ЧПУ'),
+    (r'handheld.*computer|handheld.*console', 'портативный компьютер'),
+    (r'voice remote', 'голосовой пульт'),
+    (r'neural.*interface|\bEEG\b', 'нейроинтерфейс'),
+    (r'\bDMX\b', 'контроллер освещения'),
+]
+EN_FACTS = [
+    (r'laser distance meter', 'Измеряет расстояние лазером.'),
+    (r'cross-line laser', 'Проецирует перекрёстные лазерные линии.'),
+    (r'area,? volume|area and volume', 'Вычисляет площадь и объём.'),
+    (r'folding|foldable', 'Складная конструкция облегчает хранение и переноску.'),
+    (r'IPS displays?', 'Использует экраны с IPS-матрицами.'),
+    (r'adaptive lumbar|dynamic support system', 'Предусмотрена регулируемая поддержка спины.'),
+    (r'moveable backrest', 'Положение спинки можно менять.'),
+    (r'wireless charging', 'Поддерживает беспроводную зарядку.'),
+    (r'real.time translat', 'Поддерживает перевод в реальном времени.'),
+    (r'voice assistant', 'Есть голосовой помощник.'),
+    (r'voice remote|voice control', 'Предусмотрено голосовое управление.'),
+    (r'obstacle avoidance', 'Предусмотрено распознавание препятствий.'),
+    (r'Windows.*Linux|Linux.*Windows', 'Заявлена поддержка Windows и Linux.'),
+    (r'\bNAS\b', 'Может использоваться для сетевого хранения файлов.'),
+    (r'open.source', 'Проект использует открытый исходный код.'),
+    (r'sleep track|sleep monitor', 'Помогает отслеживать сон.'),
+    (r'heart.rate', 'Отслеживает частоту пульса.'),
+    (r'noise cancell', 'Есть система шумоподавления.'),
+    (r'\bDMX lights', 'Управляет освещением по протоколу DMX.'),
+    (r'mixed reality', 'Предназначен для взаимодействия со смешанной реальностью.'),
+    (r'\b4K\b', 'Заявлена поддержка разрешения 4K.'),
+    (r'\bBluetooth\b', 'Подключается по Bluetooth.'),
+    (r'\bWi-Fi\b', 'Поддерживает подключение по Wi-Fi.'),
+]
+
+
+def kickstarter_copy(product):
+    title = product['title']
+    evidence = title + '. ' + product.get('description', '')
+    if re.search(r'\b(app|software|platform)\b', title, re.I) and not re.search(r'\b(hardware|device|keyboard|camera|robot)\b', title, re.I):
+        raise ValueError('Digital-only campaign rejected')
+    category = next((ru for pattern, ru in EN_CATEGORIES if re.search(pattern, evidence, re.I)), None)
+    if not category:
+        raise ValueError('Physical category needs a verified Russian mapping')
+    # A campaign title usually starts with the product's own name, before the tagline.
+    name = re.split(r'[:—–|]', title, maxsplit=1)[0].strip()
+    if len(name) > 65:
+        name = name[:65].rsplit(' ', 1)[0]
+    facts = []
+    for pattern, sentence in EN_FACTS:
+        for fragment in re.split(r'[.;|\n]', evidence):
+            if re.search(pattern, fragment, re.I) and not re.search(r'\b(no|not|without|unlike|competitor|coming soon|planned|will|want|prototype)\b', fragment, re.I):
+                facts.append(sentence)
+                break
+    # Never describe a concept/prototype as a finished capability.
+    if re.search(r'first prototype|only .* works today|concept stage', evidence, re.I):
+        facts = ['Проект находится на стадии разработки прототипа.']
+    facts = list(dict.fromkeys(facts))[:3]
+    if not facts:
+        raise ValueError('No unambiguous Russian facts in campaign summary')
+    return name + ' — ' + category, ' '.join(facts)
