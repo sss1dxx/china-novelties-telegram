@@ -3,13 +3,20 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json
-from parser import HTTP, DOM, discover, utcnow
+from parser import HTTP, DOM, discover, utcnow, collect_urls
 
 report = {'at': utcnow(), 'sources': []}
 http = HTTP()
 for source in json.loads(Path('config.json').read_text())['sources']:
+    if not source.get('enabled'):
+        continue
     row = {'source': source['name'], 'url': source['listing']}
     try:
+        if source['name'] == 'kickstarter':
+            urls, errors = collect_urls(http, dict(source, max_pages=1))
+            row.update(product_links=len(urls), errors=errors, status='HTTP_OK' if urls else 'UNAVAILABLE')
+            report['sources'].append(row)
+            continue
         body, mime = http.get(source['listing'])
         content = body.decode('utf-8', 'replace')
         row.update(bytes=len(body), content_type=mime,
