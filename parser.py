@@ -89,7 +89,7 @@ class HTTP:
                 if e.code == 404:
                     rules.parse([])
                 else:
-                    raise ValueError('robots.txt unavailable; collection suspended') from None
+                    raise ValueError('robots.txt HTTP %s; collection suspended' % e.code) from None
             self.robots[origin] = rules
         rules = self.robots[origin]
         if not rules.can_fetch(UA, url):
@@ -362,7 +362,7 @@ def collect_urls(http, source):
             else:
                 found = discover(body.decode('utf-8', 'replace'), page_url, source['product_pattern'])
         except Exception as exc:
-            errors.append({'page': page, 'reason': type(exc).__name__})
+            errors.append({'page': page, 'reason': str(exc) if isinstance(exc, ValueError) else (('HTTP %s' % exc.code) if isinstance(exc, error.HTTPError) else type(exc).__name__)})
             break
         new = [u for u in found if u not in urls]
         if not new:
@@ -621,6 +621,8 @@ def run(args):
         if time.monotonic() > deadline or (args.send and report['attempted'] >= run_limit):
             break
         p = json.loads(payload)
+        if not any(s['name'] == p['source'] and s.get('enabled') for s in cfg['sources']):
+            continue
         if store.duplicate(p):
             report['skipped'].append({'url': p['url'], 'reason': 'Already published or uncertain delivery'})
             continue
@@ -680,7 +682,11 @@ def run(args):
     Path(args.output).mkdir(parents=True, exist_ok=True)
     report['backfill'] = {'target': target, 'sent': store.backfill_count(),
                           'remaining': max(0, target - store.backfill_count())}
-    report['outcome'] = ('published' if report['sent'] else
+    sources_unavailable = not report['sources'] or all(
+        source.get('status') not in ('ok', 'partial', 'empty_or_changed_markup')
+        for source in report['sources'])
+    report['outcome'] = ('source_unavailable' if sources_unavailable else
+                         'published' if report['sent'] else
                          'delivery_uncertain' if report['attempted'] else
                          'no_eligible_products')
     if os.getenv('GITHUB_STEP_SUMMARY'):
@@ -688,10 +694,18 @@ def run(args):
             f.write('## Publication result\n')
             f.write('Sent: %s. Initial fill: %s/%s. Outcome: %s.\n' %
                     (report['sent'], store.backfill_count(), target, report['outcome']))
+            for source in report['sources']:
+                f.write('- Source %s: %s. Found: %s.\n' %
+                        (source['name'], source['status'], source.get('found', 0)))
+                for failure in source.get('page_errors', []):
+                    f.write('  - Page %s: %s\n' % (failure['page'], failure['reason']))
             for item in report['skipped']:
                 f.write('- %s: %s\n' % (item['url'], item['reason']))
     Path(args.output, 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     LOG.info('Eligible previews: %s; sent: %s', len(report['candidates']), report['sent'])
+    if sources_unavailable:
+        LOG.error('All sources unavailable: %s', report['sources'])
+        raise RuntimeError('All enabled sources unavailable; inspect source errors in report')
     if args.send and report['attempted'] > report['sent']:
         raise RuntimeError('Uncertain Telegram delivery; inspect report before retrying')
 
